@@ -1,0 +1,109 @@
+// i am a cat. i like to be petted. i like to be fed. i like to be
+import { initSync, Rewriter } from "../../../rewriter/wasm/out/wasm.js";
+import type { JsRewriterOutput } from "../../../rewriter/wasm/out/wasm.js";
+import { codecDecode, codecEncode, config, flagEnabled } from "@/shared";
+
+export type { JsRewriterOutput, Rewriter };
+
+import { rewriteUrl, URLMeta } from "@rewriters/url";
+import { htmlRules } from "@/shared/htmlRules";
+import { rewriteCss } from "@rewriters/css";
+import { rewriteJs } from "@rewriters/js";
+import { getInjectScripts } from "@rewriters/html";
+import { CookieStore } from "@/shared/cookie";
+
+let wasm_u8: Uint8Array<ArrayBuffer>;
+
+declare const REWRITERWASM: string | undefined;
+if (REWRITERWASM)
+	wasm_u8 = Uint8Array.from(atob(REWRITERWASM), (c) => c.charCodeAt(0));
+else if (self.WASM)
+	wasm_u8 = Uint8Array.from(atob(self.WASM), (c) => c.charCodeAt(0));
+
+// only use in sw
+export async function asyncSetWasm() {
+	try {
+		const res = await fetch(config.files.wasm);
+		if (res.ok) {
+			const buf = await res.arrayBuffer();
+			const bytes = new Uint8Array(buf);
+			if (bytes.length >= 4 && [...bytes.slice(0, 4)].every((x, i) => x === MAGIC[i])) {
+				wasm_u8 = bytes;
+			}
+		}
+	} catch (e) {
+		console.warn("Could not fetch WASM binary, using JS fallback", e);
+	}
+}
+
+export const textDecoder = new TextDecoder();
+const MAGIC = "\0asm".split("").map((x) => x.charCodeAt(0));
+
+let wasmInitialized = false;
+
+function initWasm() {
+	if (wasmInitialized) return;
+	if (wasm_u8 instanceof Uint8Array && wasm_u8.length >= 4) {
+		if ([...wasm_u8.slice(0, 4)].every((x, i) => x === MAGIC[i])) {
+			try {
+				initSync({
+					module: new WebAssembly.Module(wasm_u8),
+				});
+				wasmInitialized = true;
+			} catch (e) {
+				console.warn("WASM initSync failed, falling back", e);
+			}
+		}
+	}
+}
+
+const rewriters = [];
+export function getRewriter(meta: URLMeta): [Rewriter, () => void] {
+	initWasm();
+
+	let obj: { rewriter: Rewriter; inUse: boolean };
+	const index = rewriters.findIndex((x) => !x.inUse);
+	const len = rewriters.length;
+
+	if (index === -1) {
+		if (flagEnabled("rewriterLogs", meta.base))
+			console.log(`creating new rewriter, ${len} rewriters made already`);
+
+		const rewriter = new Rewriter({
+			config,
+			shared: {
+				rewrite: {
+					htmlRules,
+					rewriteUrl,
+					rewriteCss,
+					rewriteJs,
+					getHtmlInjectCode(cookieStore: CookieStore, foundHead: boolean) {
+						const inject = getInjectScripts(
+							cookieStore,
+							(src) => `<script src="${src}"></script>`
+						).join("");
+						
+return foundHead ? `<head>${inject}</head>` : inject;
+					},
+				},
+			},
+			flagEnabled,
+			codec: {
+				encode: codecEncode,
+				decode: codecDecode,
+			},
+		});
+		obj = { rewriter, inUse: false };
+		rewriters.push(obj);
+	} else {
+		if (flagEnabled("rewriterLogs", meta.base))
+			console.log(
+				`using cached rewriter ${index} from list of ${len} rewriters`
+			);
+
+		obj = rewriters[index];
+	}
+	obj.inUse = true;
+
+	return [obj.rewriter, () => (obj.inUse = false)];
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Onyx",
+  "description": "An experimental, high-performance web proxy server and successsor to Ultraviolet.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
